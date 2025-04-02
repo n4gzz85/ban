@@ -1,0 +1,75 @@
+name: Bandit Security Scan
+
+on:
+  pull_request:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit with proper severity check
+        id: bandit
+        continue-on-error: true
+        run: |
+          bandit -r . -s high -f json -o bandit_results.json
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Check for high vulnerabilities
+        id: check_vulns
+        run: |
+          HIGH_COUNT=$(jq '[.results[] | select(.issue_severity == "HIGH")] | length' bandit_results.json)
+          echo "HIGH_COUNT=$HIGH_COUNT" >> $GITHUB_ENV
+          echo "count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Post Block Comment
+        if: env.HIGH_COUNT != '0'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'BLOCKED'
+            })
+            core.setFailed('Blocking merge due to vulnerabilities')
+
+      - name: Post Success Comment
+        if: env.HIGH_COUNT == '0'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'Successful'
+            })
+
+  auto-merge:
+    needs: security-scan
+    if: needs.security-scan.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge PR
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              merge_method: 'merge'
+            })
